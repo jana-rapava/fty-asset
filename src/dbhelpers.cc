@@ -868,6 +868,12 @@ bool disable_power_nodes_if_limitation_applies (int max_active_power_devices, bo
                             "OR id_subtype = (SELECT id_asset_device_type "
                                 "FROM t_bios_asset_device_type "
                                 "WHERE name = 'ups' LIMIT 1) "
+                            "OR id_subtype = (SELECT id_asset_device_type "
+                                "FROM t_bios_asset_device_type "
+                                "WHERE name = 'pdu' LIMIT 1) "
+                            "OR id_subtype = (SELECT id_asset_device_type "
+                                "FROM t_bios_asset_device_type "
+                                "WHERE name = 'genset' LIMIT 1) "
                         ")"
                         "ORDER BY id_asset_element ASC "
                         "LIMIT 18446744073709551615 OFFSET :max_active_power_devices "
@@ -914,7 +920,7 @@ get_active_power_devices (bool test)
             "SELECT COUNT(*) AS CNT FROM t_bios_asset_element "
             "WHERE id_subtype IN "
                 "(SELECT id_asset_device_type FROM t_bios_asset_device_type "
-                "WHERE name IN ('epdu', 'sts', 'ups')) "
+                "WHERE name IN ('epdu', 'sts', 'ups', 'pdu', 'genset')) "
             "AND status = 'active'; "
         );
 
