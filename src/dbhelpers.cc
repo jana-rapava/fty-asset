@@ -30,8 +30,6 @@
 #include "fty_asset_classes.h"
 #define INPUT_POWER_CHAIN     1
 
-using namespace fty;
-
 // for test purposes
 std::map<std::string, std::string> test_map_asset_state;
 
@@ -485,6 +483,7 @@ should_activate (std::string operation, std::string current_status, std::string 
     bool rv = (operation == FTY_PROTO_ASSET_OP_CREATE && new_status == "active");
     rv |= (operation == FTY_PROTO_ASSET_OP_UPDATE && current_status == "active" && new_status == "active");
     rv |= (operation == FTY_PROTO_ASSET_OP_UPDATE && current_status == "inactive" && new_status == "active");
+    // TODO: should we be able to update nonactive asset?
 
     return rv;
 }
@@ -502,19 +501,11 @@ should_activate (std::string operation, std::string current_status, std::string 
 db_reply_t
 create_or_update_asset (fty_proto_t *fmsg, bool read_only, bool test, LIMITATIONS_STRUCT *limitations)
 {
-    /*uint64_t      type_id;
-    unsigned int  subtype_id;
-    uint64_t      parent_id;
-    const char   *status;
-    unsigned int  priority;
-    const char   *operation;
-    bool          update;*/
-
 
     db_reply_t ret = db_reply_new ();
 
-    std::unique_ptr<FullAsset> assetSmartPtr = getFullAssetFromFtyProto (fmsg);
-    FullAsset *assetPtr = assetSmartPtr.get();
+    std::unique_ptr<fty::FullAsset> assetSmartPtr = fty::getFullAssetFromFtyProto (fmsg);
+    fty::FullAsset *assetPtr = assetSmartPtr.get();
 
     cxxtools::SerializationInfo rootSi;
     rootSi <<= *assetPtr;
@@ -550,166 +541,23 @@ create_or_update_asset (fty_proto_t *fmsg, bool read_only, bool test, LIMITATION
             licCredAccessor.deactivateAsset (assetJsonStream.str());
         }
     }
-    catch (std::exception &e)
+    catch (fty::CommonException &e)
     {
-        // TODO: feed the DB reply so we would fail the same as before
-        log_error ("Error during asset activation - %s", e.what());
+        // TODO: fill in the DB reply so we would fail the same as before
+        log_error ("Error during asset activation/deactivation - %s", e.what());
+        ret.status     = e.getStatus();
+        ret.errtype    = e.getErrorType();
+        ret.errsubtype = e.getErrorSubtype();
+        return ret;
     }
     catch (...)
     {
-        // TODO: feed the DB reply so we would fail the same as before
-        log_error ("Error during asset activation - unknown error");
-    }
-    /*if (0 == limitations->global_configurability) {
-        ret.status     = -1;
-        ret.errtype    = LICENSING_ERR;
-        ret.errsubtype = LICENSING_GLOBAL_CONFIGURABILITY_DISABLED;
-        return ret;
-    }
-    type_id = persist::type_to_typeid (fty_proto_aux_string (fmsg, "type", ""));
-    subtype_id = persist::subtype_to_subtypeid (fty_proto_aux_string (fmsg, "subtype", ""));
-    if (subtype_id == 0) subtype_id = persist::asset_subtype::N_A;
-    parent_id = fty_proto_aux_number (fmsg, "parent", 0);
-    status = fty_proto_aux_string (fmsg, "status", "nonactive");
-    priority = fty_proto_aux_number (fmsg, "priority", 5);
-    std::string element_name (fty_proto_name (fmsg));
-    // TODO: element name from ext.name?
-    operation = fty_proto_operation (fmsg);
-    update = streq (operation, "update");
-
-    if (!update) {
-        if (element_name.empty ()) {
-            if (type_id == persist::asset_type::DEVICE) {
-                element_name = persist::subtypeid_to_subtype (subtype_id);
-            } else {
-                element_name = persist::typeid_to_type (type_id);
-            }
-        }
-        // TODO: sanitize name ("rack controller")
-    }
-    log_debug ("  element_name = '%s'", element_name.c_str ());
-
-    if (limitations->max_active_power_devices >= 0 && type_id == persist::asset_type::DEVICE && streq (status, "active")) {
-        std::string db_status = get_status_from_db (element_name.c_str (), test);
-        // limit applies only to assets that are attempted to be activated, but are disabled in database
-        // or to new assets, also may trigger in case of DB failure, but that's fine
-        if (db_status != "active") {
-            switch (subtype_id) {
-                default:
-                // no default, not to generate warning
-                    break;
-                case persist::asset_subtype::PDU:
-                case persist::asset_subtype::GENSET:
-                case persist::asset_subtype::EPDU:
-                case persist::asset_subtype::UPS:
-                case persist::asset_subtype::STS:
-                    // check if power devices exceeded allowed limit
-                    int pd_active = get_active_power_devices(test);
-                    if (pd_active + 1 > limitations->max_active_power_devices) {
-                        // raise error if limit reached
-                        ret.status     = -1;
-                        ret.errtype    = LICENSING_ERR;
-                        ret.errsubtype = LICENSING_POWER_DEVICES_COUNT_REACHED;
-                        return ret;
-                    }
-                    break;
-            }
-        }
-    }
-
-    // ASSUMPTION: all datacenters are unlocated elements
-    if (type_id == persist::asset_type::DATACENTER && parent_id != 0)
-    {
+        // TODO: fill in the DB reply so we would fail the same as before
+        log_error ("Error during asset activation/deactivation - unknown error");
         ret.status     = 0;
-        ret.errtype    = DB_ERR;
-        ret.errsubtype = DB_ERROR_BADINPUT;
+        ret.errtype    = UNKNOWN_ERR;
         return ret;
     }
-    // TODO: check whether asset exists and drop?
-
-    if (test) {
-        log_debug ("[create_or_update_asset]: runs in test mode");
-        test_map_asset_state[std::string(element_name)] = std::string(status);
-        ret.status = 1;
-        return ret;
-    }
-
-    try {
-        // this concat with last_insert_id may have race condition issue but hopefully is not important
-        tntdb::Connection conn = tntdb::connectCached (DBConn::url);
-        tntdb::Statement statement;
-        if (update) {
-            statement = conn.prepareCached (
-                " INSERT INTO t_bios_asset_element "
-                " (name, id_type, id_subtype, id_parent, status, priority, asset_tag) "
-                " VALUES "
-                " (:name, :id_type, :id_subtype, :id_parent, :status, :priority, :asset_tag) "
-                " ON DUPLICATE KEY UPDATE name = :name "
-            );
-        } else {
-            // @ is prohibited in name => name-@@-342 is unique
-            statement = conn.prepareCached (
-                " INSERT INTO t_bios_asset_element "
-                " (name, id_type, id_subtype, id_parent, status, priority, asset_tag) "
-                " VALUES "
-                " (concat (:name, '-@@-', " + std::to_string (rand ())  + "), :id_type, :id_subtype, :id_parent, :status, :priority, :asset_tag) "
-            );
-        }
-        if (parent_id == 0)
-        {
-            ret.affected_rows = statement.
-                set ("name", element_name).
-                set ("id_type", type_id).
-                set ("id_subtype", subtype_id).
-                setNull ("id_parent").
-                set ("status", status).
-                set ("priority", priority).
-                set ("asset_tag", "").
-                execute();
-        }
-        else
-        {
-            ret.affected_rows = statement.
-                set ("name", element_name).
-                set ("id_type", type_id).
-                set ("id_subtype", subtype_id).
-                set ("id_parent", parent_id).
-                set ("status", status).
-                set ("priority", priority).
-                set ("asset_tag", "").
-                execute();
-        }
-
-        ret.rowid = conn.lastInsertId ();
-        log_debug ("[t_bios_asset_element]: was inserted %" PRIu64 " rows", ret.affected_rows);
-        if (! update) {
-            // it is insert, fix the name
-            statement = conn.prepareCached (
-                " UPDATE t_bios_asset_element "
-                "  set name = concat(:name, '-', :id) "
-                " WHERE id_asset_element = :id "
-            );
-            statement.set ("name", element_name).
-                set ("id", ret.rowid).
-                execute();
-            // also set name to fty_proto
-            fty_proto_set_name (fmsg, "%s-%" PRIu64, element_name.c_str (), ret.rowid);
-        }
-        if (ret.affected_rows == 0)
-            log_debug ("Asset unchanged, processing inventory");
-        else
-            log_debug ("Insert went well, processing inventory.");
-        process_insert_inventory (fty_proto_name (fmsg), fty_proto_ext (fmsg), read_only, false);
-        ret.status = 1;
-        return ret;
-    }
-    catch (const std::exception &e) {
-        ret.status     = 0;
-        ret.errtype    = DB_ERR;
-        ret.errsubtype = DB_ERROR_INTERNAL;
-        // bios_error_idx(ret.rowid, ret.msg, "internal-error", "Unspecified issue with database.");
-        return ret;
-    }*/
 }
 
 //  Self test of this class
