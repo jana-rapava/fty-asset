@@ -518,7 +518,11 @@ create_or_update_asset (fty_proto_t *fmsg, bool read_only, bool test, LIMITATION
     std::string id = assetPtr->getId();
     std::string new_status = assetPtr->getStatusString ();
 
-    std::string current_status = get_status_from_db (id, test);
+    std::string current_status;
+    if (!id.empty())
+    {
+        current_status = get_status_from_db (id, test);
+    }
 
     // because even adding of inactive asset may be prohibited if global_configurability == 0
     try
@@ -530,15 +534,21 @@ create_or_update_asset (fty_proto_t *fmsg, bool read_only, bool test, LIMITATION
             return ret;
         }
 
+        std::string iname;
         mlm::MlmSyncClient client (AGENT_FTY_ASSET, ETN_LICENSING_CREDITS_AGENT);
         lic_cred::LicensingCreditsAccessor licCredAccessor (client);
         if (should_activate (operation, current_status, new_status))
         {
-            licCredAccessor.activateAsset (assetJsonStream.str());
+            iname = licCredAccessor.activateAsset (assetJsonStream.str());
         }
         else
         {
-            licCredAccessor.deactivateAsset (assetJsonStream.str());
+            iname = licCredAccessor.deactivateAsset (assetJsonStream.str());
+        }
+
+        if (streq (fty_proto_name (fmsg), "") && !iname.empty())
+        {
+            fty_proto_set_name (fmsg, iname.c_str());
         }
     }
     catch (fty::CommonException &e)
