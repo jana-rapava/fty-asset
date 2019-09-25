@@ -489,6 +489,25 @@ static void
 }
 
 static zmsg_t *
+    s_publish_delete_asset_msg (
+        const std::string& asset_name,
+        const char *operation,
+        std::string & subject)
+{
+    subject.append ("unknown.unknown");
+    subject.append ("@");
+    subject.append (asset_name);
+    log_debug("notifying ASSETS %s %s ..",operation,subject.c_str());
+    zmsg_t *msg = fty_proto_encode_asset (
+            NULL,
+            asset_name.c_str(),
+            operation,
+            NULL);
+    return msg;
+}
+
+
+static zmsg_t *
     s_publish_create_or_update_asset_msg (
         fty_asset_server_t *cfg,
         const std::string &asset_name,
@@ -636,7 +655,7 @@ static zmsg_t *
         log_error ("%s:\tselect_asset_element_super_parent ('%s') failed.", cfg->name, asset_name.c_str());
         return NULL;
     }
-    // other information like, groups, power chain for now are not included in the message
+    //TODO: other information like, groups, power chain for now are not included in the message
     const char* type = (const char*) zhash_lookup (aux, "type");
     subject = (type==NULL) ? "unknown" : type;
     subject.append (".");
@@ -663,7 +682,15 @@ static void
         bool read_only)
 {
     std::string subject;
-    auto msg = s_publish_create_or_update_asset_msg (cfg, asset_name, operation, subject, read_only);
+    zmsg_t *msg;
+    if (streq (operation, "FTY_PROTO_ASSET_OP_DELETE"))
+    {
+        msg = s_publish_delete_asset_msg (asset_name, operation, subject);
+    }
+    else
+    {
+        msg = s_publish_create_or_update_asset_msg (cfg, asset_name, operation, subject, read_only);
+    }
     if (NULL == msg || 0 != mlm_client_send (cfg->stream_client, subject.c_str(), &msg)) {
         log_info ("%s:\tmlm_client_send not sending message for asset '%s'", cfg->name, asset_name.c_str());
         return;
@@ -768,7 +795,7 @@ static void
 
     const char *operation = fty_proto_operation (fmsg);
 
-    if (streq (operation, "create") || streq (operation, "update")) {
+    if (streq (operation, FTY_PROTO_ASSET_OP_CREATE) || streq (operation, FTY_PROTO_ASSET_OP_UPDATE) || streq (operation, FTY_PROTO_ASSET_OP_DELETE)) {
         db_reply_t dbreply = create_or_update_asset (fmsg, read_only, cfg->test, &(cfg->limitations));
         if (-1 == dbreply.status && LICENSING_ERR == dbreply.errtype) {
             if (LICENSING_POWER_DEVICES_COUNT_REACHED == dbreply.errsubtype) {
