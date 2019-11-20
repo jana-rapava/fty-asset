@@ -275,6 +275,7 @@ process_insert_inventory
  *
  *  \return  0 - in case of success
  *          -1 - in case of some unexpected error
+ *           2 - in case nothing has changed
  */
 int
 process_insert_inventory
@@ -298,6 +299,7 @@ process_insert_inventory
     tntdb::Transaction trans (conn);
     tntdb::Statement st = conn.prepareCached (SQL_EXT_ATT_INVENTORY);
 
+    bool updated = false;
     for (void* it = zhash_first (ext_attributes);
                it != NULL;
                it = zhash_next (ext_attributes)) {
@@ -313,6 +315,7 @@ process_insert_inventory
         if (el != map_cache.end() && el->second == value)
             continue;
         try {
+            updated = true;
             st.set ("keytag", keytag).
                set ("value", value).
                set ("device_name", device_name).
@@ -328,6 +331,10 @@ process_insert_inventory
     }
 
     trans.commit ();
+    if (updated)
+    {
+        return 2;
+    }
     return 0;
 }
 /**
