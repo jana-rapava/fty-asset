@@ -113,10 +113,28 @@ fty_asset_inventory_server (zsock_t *pipe, void *args)
 
             if (streq (operation, "inventory")) {
                 zhash_t *ext = fty_proto_ext (proto);
+                //TODO: return special value indicating that some value has changed
                 int rv = process_insert_inventory (device_name, ext, true, ext_map_cache, test);
                 if (rv != 0)
                     log_error ("Could not insert inventory data into DB");
-            } else if (streq (operation, "delete")) {
+                if (rv == 2) // something changed
+                {
+                    std::string status = DBAssets::get_status_from_db (device_name);
+                    if (status == "active")
+                    {
+                        std::string asset_json = getJsonAsset (NULL, device_name); // get this from fty-rest
+                        mlm::MlmSyncClient client (AGENT_FTY_ASSET, "etn-licensing-credits");
+                        fty::AssetActivator assetActivator (client);
+                        try
+                        {
+                            assetActivator.activate (asset_json);
+                        }
+                        catch (const std::exception ￻&e)
+                        {
+                            log_error ("%s: not enough licensing credits after asset change", device_name);
+                            DBAssets::update_asset_status_by_name (device_name, "nonactive");
+                        }
+          } else if (streq (operation, "delete")) {
                 //  Vacuum the cache
                 //  The keys are formatted as asset_name:keytag[01]
                 device_name.append(":");
