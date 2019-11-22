@@ -464,21 +464,90 @@ get_active_power_devices (bool test)
 }
 
 bool
-should_activate (std::string operation, std::string current_status, std::string new_status)
+should_deactivate (const std::string& operation, const std::string& current_status, const fty::FullAsset &asset)
 {
-    bool rv = (operation == FTY_PROTO_ASSET_OP_CREATE && new_status == "active");
-    rv |= (operation == FTY_PROTO_ASSET_OP_UPDATE && current_status == "nonactive" && new_status == "active");
-
+    bool rv = (asset.getType() == Type_Device && asset.getSubtype != Subtype_Rackcontroller &&
+            operation == FTY_PROTO_ASSET_OP_UPDATE && current_status == "active" && asset.getStatus() == Status_Nonactive);
     return rv;
 }
 
-bool
-should_deactivate (std::string operation, std::string current_status, std::string new_status)
+void
+s_insert_into_DB (const std::string &status)
 {
-    bool rv = (operation == FTY_PROTO_ASSET_OP_UPDATE && current_status == "active" && new_status == "nonactive");
-    rv |= (operation == FTY_PROTO_ASSET_OP_DELETE);
+    try {
+        // this concat with last_insert_id may have race condition issue but hopefully is not important
+        tntdb::Connection conn = tntdb::connectCached (DBConn::url);
+        tntdb::Statement statement;
+        if (!create) {
+            statement = conn.prepareCached (
+                " INSERT INTO t_bios_asset_element "
+                " (name, id_type, id_subtype, id_parent, status, priority, asset_tag) "
+                " VALUES "
+                " (:name, :id_type, :id_subtype, :id_parent, :status, :priority, :asset_tag) "
+                " ON DUPLICATE KEY UPDATE name = :name "
+            );
+        } else {
+            // @ is prohibited in name => name-@@-342 is unique
+            statement = conn.prepareCached (
+                " INSERT INTO t_bios_asset_element "
+                " (name, id_type, id_subtype, id_parent, status, priority, asset_tag) "
+                " VALUES "
+                " (concat (:name, '-@@-', " + std::to_string (rand ())  + "), :id_type, :id_subtype, :id_parent, :status, :priority, :asset_tag) "
+            );
+        }
 
-    return rv;
+        if (parent_id == 0)
+        {
+            ret.affected_rows = statement.
+                set ("name", element_name).
+                set ("id_type", type_id).
+                set ("id_subtype", subtype_id).
+                setNull ("id_parent").
+                set ("status", status).
+                set ("priority", priority).
+                set ("asset_tag", "").
+                execute();
+        }
+        else
+        {
+            ret.affected_rows = statement.
+                set ("name", element_name).
+                set ("id_type", type_id).
+                set ("id_subtype", subtype_id).
+                set ("id_parent", parent_id).
+                set ("status", status).
+                set ("priority", priority).
+                set ("asset_tag", "").
+                execute();
+        }
+
+        ret.rowid = conn.lastInsertId ();
+        log_debug ("[t_bios_asset_element]: was inserted %" PRIu64 " rows", ret.affected_rows);
+        if (create) {
+            // it is insert, fix the name
+            statement = conn.prepareCached (
+                " UPDATE t_bios_asset_element "
+                "  set name = concat(:name, '-', :id) "
+                " WHERE id_asset_element = :id "
+            );
+            statement.set ("name", element_name).
+                set ("id", ret.rowid).
+                execute();
+            // also set name to fty_proto
+            fty_proto_set_name (fmsg, "%s-%" PRIu64, element_name.c_str (), ret.rowid);
+        }
+        if (ret.affected_rows == 0)
+            log_debug ("Asset unchanged, processing inventory");
+        else
+            log_debug ("Insert went well, processing inventory.");
+        process_insert_inventory (fty_proto_name (fmsg), fty_proto_ext (fmsg), read_only, false);
+    }
+    catch (const std::exception &e) {
+        ret.status     = 0;
+        ret.errtype    = DB_ERR;
+        ret.errsubtype = DB_ERROR_INTERNAL;
+        return ret;
+    }
 }
 
 /**
@@ -575,10 +644,10 @@ create_or_update_asset (fty_proto_t *fmsg, bool read_only, bool test, LIMITATION
     }
 
     std::unique_ptr<fty::FullAsset> assetSmartPtr = fty::getFullAssetFromFtyProto (fmsg);
-
     mlm::MlmSyncClient client (AGENT_FTY_ASSET, AGENT_ASSET_ACTIVATOR);
     fty::AssetActivator activationAccessor (client);
-    if (should_activate (operation, current_status, status))
+
+    if (asset.getType() == Type_Device && asset.getSubtype != Subtype_Rackcontroller && asset.getStatus == Status_Active)
     {
         if (!activationAccessor.isActivable (*assetSmartPtr))
         {
@@ -587,114 +656,31 @@ create_or_update_asset (fty_proto_t *fmsg, bool read_only, bool test, LIMITATION
             ret.errsubtype = LICENSING_POWER_DEVICES_COUNT_REACHED;
             return ret;
         }
-    }
 
-    try {
-        // this concat with last_insert_id may have race condition issue but hopefully is not important
-        tntdb::Connection conn = tntdb::connectCached (DBConn::url);
-        tntdb::Statement statement;
-        if (!create) {
-            statement = conn.prepareCached (
-                " INSERT INTO t_bios_asset_element "
-                " (name, id_type, id_subtype, id_parent, status, priority, asset_tag) "
-                " VALUES "
-                " (:name, :id_type, :id_subtype, :id_parent, :status, :priority, :asset_tag) "
-                " ON DUPLICATE KEY UPDATE name = :name "
-            );
-        } else {
-            // @ is prohibited in name => name-@@-342 is unique
-            statement = conn.prepareCached (
-                " INSERT INTO t_bios_asset_element "
-                " (name, id_type, id_subtype, id_parent, status, priority, asset_tag) "
-                " VALUES "
-                " (concat (:name, '-@@-', " + std::to_string (rand ())  + "), :id_type, :id_subtype, :id_parent, :status, :priority, :asset_tag) "
-            );
-        }
-        if (parent_id == 0)
-        {
-            ret.affected_rows = statement.
-                set ("name", element_name).
-                set ("id_type", type_id).
-                set ("id_subtype", subtype_id).
-                setNull ("id_parent").
-                set ("status", status).
-                set ("priority", priority).
-                set ("asset_tag", "").
-                execute();
-        }
-        else
-        {
-            ret.affected_rows = statement.
-                set ("name", element_name).
-                set ("id_type", type_id).
-                set ("id_subtype", subtype_id).
-                set ("id_parent", parent_id).
-                set ("status", status).
-                set ("priority", priority).
-                set ("asset_tag", "").
-                execute();
-        }
+        s_insert_into_DB ("nonactive");
 
-        ret.rowid = conn.lastInsertId ();
-        log_debug ("[t_bios_asset_element]: was inserted %" PRIu64 " rows", ret.affected_rows);
-        if (create) {
-            // it is insert, fix the name
-            statement = conn.prepareCached (
-                " UPDATE t_bios_asset_element "
-                "  set name = concat(:name, '-', :id) "
-                " WHERE id_asset_element = :id "
-            );
-            statement.set ("name", element_name).
-                set ("id", ret.rowid).
-                execute();
-            // also set name to fty_proto
-            fty_proto_set_name (fmsg, "%s-%" PRIu64, element_name.c_str (), ret.rowid);
-        }
-        if (ret.affected_rows == 0)
-            log_debug ("Asset unchanged, processing inventory");
-        else
-            log_debug ("Insert went well, processing inventory.");
-        process_insert_inventory (fty_proto_name (fmsg), fty_proto_ext (fmsg), read_only, false);
-
-        // if asset was created, name has changed and we must re-create the object
         if (create)
         {
             assetSmartPtr = fty::getFullAssetFromFtyProto (fmsg);
         }
-
-        if (should_activate (operation, current_status, status))
-        {
-            try
-            {
-                activationAccessor.activate (*assetSmartPtr);
-            }
-            catch (const std::exception &e)
-            {
-                log_error ("Error during asset activation - %s", e.what());
-            }
-        }
-
-        if (should_deactivate (operation, current_status, status))
-        {
-            try
-            {
-                activationAccessor.deactivate (*assetSmartPtr);
-            }
-            catch (const std::exception &e)
-            {
-                log_error ("Error during asset deactivation - %s", e.what());
-            }
-        }
-
-        ret.status = 1;
-        return ret;
+        activationAccessor.activate (*assetSmartPtr);
     }
-    catch (const std::exception &e) {
-        ret.status     = 0;
-        ret.errtype    = DB_ERR;
-        ret.errsubtype = DB_ERROR_INTERNAL;
-        return ret;
+    else
+    {
+        s_insert_into_DB (status);
+        if (should_deactivate (operation, current_status, *assetSmartPtr)
+        {
+            activationAccessor.deactivate (*assetSmartPtr);
+        }
     }
+    // we should check if asset is activable, insert it as inactive and then activate it if:
+    // * asset is a device
+    // * asset is not a RC
+    // * new status is "active"
+    // we should insert asset "as is" if:
+    // * asset is not a device OR asset is RC
+    // we should insert asset "as is" and deactivate if:
+    // * asset is a device, was active and is now inactive
 }
 
 //  Self test of this class
