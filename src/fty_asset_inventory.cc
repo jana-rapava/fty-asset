@@ -119,7 +119,7 @@ fty_asset_inventory_server (zsock_t *pipe, void *args)
                     log_error ("Could not insert inventory data into DB");
                 if (rv == 2) // something changed
                 {
-                    std::string status = DBAssets::get_status_from_db (device_name);
+                    std::string status = DBAssets::get_status_from_db_helper (device_name);
                     if (status == "active")
                     {
                         std::string asset_json = getJsonAsset (NULL, device_name); // get this from fty-rest
@@ -129,11 +129,13 @@ fty_asset_inventory_server (zsock_t *pipe, void *args)
                         {
                             assetActivator.activate (asset_json);
                         }
-                        catch (const std::exception ￻&e)
+                        catch (const std::exception &e)
                         {
-                            log_error ("%s: not enough licensing credits after asset change", device_name);
-                            DBAssets::update_asset_status_by_name (device_name, "nonactive");
+                            log_error ("%s: not enough licensing credits after asset change", device_name.c_str());
+                            DBAssetsUpdate::update_asset_status_by_name (device_name.c_str(), "nonactive");
                         }
+                    }
+                }
           } else if (streq (operation, "delete")) {
                 //  Vacuum the cache
                 //  The keys are formatted as asset_name:keytag[01]
