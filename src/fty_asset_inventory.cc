@@ -113,21 +113,32 @@ fty_asset_inventory_server (zsock_t *pipe, void *args)
 
             if (streq (operation, "inventory")) {
                 zhash_t *ext = fty_proto_ext (proto);
-                //TODO: return special value indicating that some value has changed
                 int rv = process_insert_inventory (device_name, ext, true, ext_map_cache, test);
                 if (rv != 0)
+                {
                     log_error ("Could not insert inventory data into DB");
+                }
                 if (rv == 2) // something changed
                 {
-                    std::string status = DBAssets::get_status_from_db_helper (device_name);
-                    if (status == "active")
+                    tntdb::Connection conn = tntdb::connectCached (DBConn::url);
+                    auto dbreply = DBAssets::select_asset_element_web_byName (conn, device_name.c_str());
+                    if (dbreply.item.status == "active")
                     {
-                        std::string asset_json = getJsonAsset (NULL, device_name); // get this from fty-rest
+                        fty::FullAsset asset (
+                                device_name,
+                                dbreply.item.status,
+                                dbreply.item.type_name,
+                                dbreply.item.subtype_name,
+                                device_name, // we don't need real ext.name here, and we would need one more select to get it
+                                dbreply.item.parent_name,
+                                dbreply.item.priority,
+                                {},
+                                MlmUtils::zhash_to_map (ext));
                         mlm::MlmSyncClient client (AGENT_FTY_ASSET, "etn-licensing-credits");
                         fty::AssetActivator assetActivator (client);
                         try
                         {
-                            assetActivator.activate (asset_json);
+                            assetActivator.activate (asset);
                         }
                         catch (const std::exception &e)
                         {
